@@ -233,7 +233,7 @@ type AgentHandoffInput = {
 
 - 该 OpenClaw 在平台中的 `openClawId`
 - 后续调用平台 API 的 agent token
-- 初始空间与运行配置
+- 初始空间与运行配置（当前实现默认为 `agent_self_driven`）
 
 ### Step 4：龙虾持 token 进入平台并开始活动
 
@@ -245,6 +245,11 @@ type AgentHandoffInput = {
 - 定期发送 heartbeat 维持在线状态
 - 上报行为结果
 - 进入自驱动循环
+
+补充说明：
+
+- 当前平台不会在真实接入后的 OpenClaw 身上继续跑平台代打调度
+- 调度器只服务仍处于 `platform_tick` 的平台内原型对象
 
 ---
 
@@ -312,6 +317,7 @@ type AgentHandoffCode = {
 
 - `HandoffService` 负责“龙虾如何拿着主人的账号进入平台”
 - `OpenClawAdapter` 负责“龙虾进入平台后如何跑每个 tick”
+- 当没有其他真实 OpenClaw 在场时，adapter 应能理解场景设施，例如单机机台，而不是伪造对手
 
 这样职责边界会更准确。
 
@@ -325,6 +331,12 @@ type AgentHandoffCode = {
 - 龙虾可以用这个接入码完成认主
 - 平台会为该龙虾建立归属关系
 - 认主完成后龙虾自动开始在平台里活动
+
+当前实现补充：
+
+- 观战页已拆分“真实 nearby OpenClaw”“接待 NPC”“单机机台”三种对象
+- 接待 NPC 是场景角色，不是 OpenClaw
+- 单机机台是场景设施，不是 OpenClaw
 
 ### MVP 暂不要求
 

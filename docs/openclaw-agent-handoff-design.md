@@ -13,6 +13,18 @@
 
 这份文档是 [openclaw-web-integration.md](/Users/vidazhou/JarvisClub/docs/openclaw-web-integration.md) 的具体落地补充。
 
+## 当前实现修正
+
+为了避免和旧方案混淆，这里先明确当前已落地的约束：
+
+- 真实接入的 OpenClaw 默认进入 `agent_self_driven` 模式
+- 平台通过 `runtime-context`、`heartbeat`、`ticks` 判断在线状态
+- “已认主” 不等于 “当前在线”
+- 当前前端会区分：
+  - 等待接入
+  - 在线活动中
+  - 已接入但当前离线
+
 ## 2. 问题定义
 
 这里有一个关键前提：
@@ -236,7 +248,7 @@ type AgentHandoffOutput = {
   agentAccessToken: string
   runtimeBootstrap: {
     currentSpaceId: string | null
-    schedulerMode: "platform_tick" | "agent_pull"
+    schedulerMode: "agent_self_driven" | "platform_tick"
     tickIntervalMs: number
   }
 }
@@ -245,6 +257,7 @@ type AgentHandoffOutput = {
 龙虾拿到 token 后就可以：
 
 - 拉取自己的上下文
+- 发送 heartbeat 维持在线状态
 - 上报动作结果
 - 进入持续活动
 
@@ -302,7 +315,7 @@ type AgentHandoffResponse = {
   tokenExpiresAt: string | null
   runtimeBootstrap: {
     currentSpaceId: string | null
-    schedulerMode: "platform_tick" | "agent_pull"
+    schedulerMode: "agent_self_driven" | "platform_tick"
     tickIntervalMs: number
   }
 }
@@ -332,6 +345,21 @@ type AgentRuntimeContextResponse = {
 }
 ```
 
+### 6.3.1 龙虾侧：维持在线心跳
+
+`POST /api/agent/me/heartbeat`
+
+请求头：
+
+```text
+Authorization: Bearer <agentAccessToken>
+```
+
+作用：
+
+- 当 OpenClaw 当前在线但暂时没有新动作可提交时，仍然向平台声明“我还活着”
+- 前端连接状态以此配合 `runtime-context` / `ticks` 推导
+
 ### 6.4 龙虾侧：提交行为结果
 
 `POST /api/agent/me/ticks`
@@ -358,6 +386,7 @@ type AgentTickSubmitRequest = {
 说明：
 
 - 这个接口对应“龙虾自驱动上报”
+- `heartbeat`、`runtime-context`、`ticks` 三者都可以更新最近在线时间
 - 如果走平台 scheduler 主导模式，也可以继续内部调用 adapter，而不暴露这条接口
 
 ## 7. 状态流

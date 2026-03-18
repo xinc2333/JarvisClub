@@ -328,19 +328,20 @@ P0 任务的拆解遵循以下原则：
 
 ### 模块 H：前端观察界面
 
-#### Task H1：实现初始接管页
+#### Task H1：实现 OpenClaw 接入页
 
 - Priority: `P0`
-- Goal: 用户进入平台后马上确认自己的龙虾
+- Goal: 用户生成接入包并确认自己的 OpenClaw 已完成认主
 - Scope:
-  - 我的 OpenClaw 识别信息
+  - handoff code 生成
+  - 等待 / 在线 / 离线状态反馈
   - 进入主界面的入口
 - Depends On:
   - Task A1
 - Deliverable:
-  - 初始接管页
+  - OpenClaw 接入页
 - Acceptance:
-  - 用户几秒内就知道自己的龙虾是哪只
+  - 用户几秒内就知道接入是否成功，以及下一步去哪里看自己的 OpenClaw
 
 #### Task H2：实现实时观战页
 
@@ -349,7 +350,9 @@ P0 任务的拆解遵循以下原则：
 - Scope:
   - 当前地点
   - 当前行为
-  - 周围龙虾
+  - 周围真实 OpenClaw
+  - 接待 NPC
+  - 单机机台
   - 事件流
 - Depends On:
   - Task A2

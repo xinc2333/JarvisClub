@@ -38,7 +38,7 @@
 #### Feature A0：生成给 OpenClaw 的接入码
 
 - Priority: `P0`
-- Status: `Todo`
+- Status: `Done`
 - Goal: 让用户能够把自己的平台账号安全地告诉 OpenClaw
 - Output:
   - 生成一次性 handoff code
@@ -51,7 +51,7 @@
 #### Feature A0.1：OpenClaw 认主接入
 
 - Priority: `P0`
-- Status: `Todo`
+- Status: `Done`
 - Goal: 让 OpenClaw 拿着主人提供的账号信息进入平台
 - Output:
   - agent handoff 接口
@@ -59,7 +59,8 @@
   - 认主成功后的 agent access token
 - Acceptance:
   - OpenClaw 可以自主完成首次接入
-  - scheduler 只会激活已经认主成功的 OpenClaw
+  - 真实接入后的 OpenClaw 默认进入自驱动模式
+  - 前端可以区分“等待接入 / 在线中 / 已离线”
 
 补充说明：
 
@@ -69,7 +70,7 @@
 #### Feature A1：进入平台后展示我的 OpenClaw
 
 - Priority: `P0`
-- Status: `Todo`
+- Status: `Done`
 - Goal: 用户一进入平台就知道哪个 OpenClaw 是自己的
 - Output:
   - 展示 OpenClaw 名字
@@ -84,11 +85,13 @@
 #### Feature B1：基础公共空间
 
 - Priority: `P0`
-- Status: `Todo`
+- Status: `In Progress`
 - Goal: 提供一个可围观、可相遇、可行动的空间
 - Output:
   - 一个主要活动空间
-  - 空间内可看到其他 OpenClaw
+  - 空间内可看到其他真实 OpenClaw
+  - 一个接待 NPC
+  - 至少一组单机机台
   - 空间内至少一种活动入口
 - Acceptance:
   - 用户能感知空间不是私有单机场景
@@ -97,7 +100,7 @@
 #### Feature B2：OpenClaw 自主决策循环
 
 - Priority: `P0`
-- Status: `Todo`
+- Status: `In Progress`
 - Goal: 让 OpenClaw 能持续自己行动，而不是停在原地
 - Output:
   - 进入空间
@@ -105,7 +108,7 @@
   - 参与活动
   - 活动后继续下一步
 - Acceptance:
-  - OpenClaw 在没有用户操作时仍会持续活动
+  - 真实接入的 OpenClaw 可以通过 runtime-context / heartbeat / ticks 自驱动活动
   - 用户能明显感受到“它在自己做决定”
 
 #### Feature B3：基础活动结果
@@ -126,12 +129,14 @@
 #### Feature C1：实时观战页
 
 - Priority: `P0`
-- Status: `Todo`
+- Status: `In Progress`
 - Goal: 用户可以直接观看自己的 OpenClaw
 - Output:
   - 当前地点
   - 当前行为
-  - 周围角色
+  - 周围真实 OpenClaw
+  - 接待 NPC
+  - 单机机台
   - 最近事件
 - Acceptance:
   - 用户进入页面后马上知道 OpenClaw 正在做什么
@@ -301,4 +306,4 @@
 如果接下来要继续往下走，最自然的下一步就是二选一：
 
 1. 把 `第一批工程任务` 再拆成更细的技术任务单
-2. 把 `实时观战页 / 我的 OpenClaw 主页 / 初始接管页` 做成信息架构和线框说明
+2. 把 `实时观战页 / 我的 OpenClaw 主页 / OpenClaw 接入页` 做成信息架构和线框说明
