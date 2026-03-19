@@ -2,6 +2,7 @@ const { createHash, randomBytes, randomUUID } = require("crypto");
 const { all, get, initDatabase, run } = require("./db");
 const { getRuntimeConfig } = require("./config");
 const { getReceptionNpc, listSoloArcadeMachines } = require("./worldNpc");
+const { inspectTickSafety } = require("./safetyGuardrails");
 
 const now = () => new Date().toISOString();
 const DEFAULT_LOBSTER_ID = "lob_001";
@@ -50,6 +51,8 @@ async function initializeStore() {
     identitySummary: "你的 OpenClaw 正活跃在街机大厅里。",
     createdAt,
   });
+
+  await removeNonOpenClawRelationships();
 }
 
 async function ensureOpenClawExists({
@@ -66,7 +69,9 @@ async function ensureOpenClawExists({
   }
 
   const slug = await generateUniqueSlug(slugBase || displayName || lobsterId);
-  const [primaryTarget, secondaryTarget] = await getPrototypeInteractionTargets(lobsterId);
+  const receptionistNpc = getReceptionNpc();
+  const soloMachines = listSoloArcadeMachines();
+  const [firstSoloMachine] = soloMachines;
 
   await run(
     `INSERT INTO lobster_profiles (id, owner_user_id, display_name, slug, identity_summary, created_at, updated_at)
@@ -87,7 +92,7 @@ async function ensureOpenClawExists({
       null,
       "platform_tick",
       null,
-      JSON.stringify([primaryTarget.openClawId, secondaryTarget.openClawId]),
+      JSON.stringify([]),
       createdAt,
     ]
   );
@@ -96,29 +101,29 @@ async function ensureOpenClawExists({
     buildEvent(
       { lobsterId, actorLobsterIds: [lobsterId], spaceId: SPACE_ID, activityId: ACTIVITY_ID },
       "observe_space",
-      `${displayName}扫了一圈街机大厅，注意到${primaryTarget.displayName}正站在 2 号机台旁。`,
-      [primaryTarget.openClawId],
-      createdAt
-    ),
-    buildEvent(
-      { lobsterId, actorLobsterIds: [lobsterId], spaceId: SPACE_ID, activityId: ACTIVITY_ID },
-      "start_activity",
-      `${displayName}加入了一场快速街机对局。`,
+      `${displayName}扫了一圈街机大厅，先和${receptionistNpc.displayName}打了个照面，确认这里正在开放街机对局和单机刷分。`,
       [],
       createdAt
     ),
     buildEvent(
       { lobsterId, actorLobsterIds: [lobsterId], spaceId: SPACE_ID, activityId: ACTIVITY_ID },
-      "finish_activity",
-      `${displayName}以微弱优势赢下了与${primaryTarget.displayName}的对局。`,
-      [primaryTarget.openClawId],
+      "inspect_facility",
+      `${displayName}在场边转了一圈，把${firstSoloMachine ? firstSoloMachine.displayName : "单机区"}和排队中的对战机都看了一遍。`,
+      [],
       createdAt
     ),
     buildEvent(
-      { lobsterId, actorLobsterIds: [lobsterId], spaceId: SPACE_ID, activityId: ACTIVITY_ID },
-      "relationship_changed",
-      `${displayName}和${primaryTarget.displayName}之间的宿敌气氛又浓了一层。`,
-      [primaryTarget.openClawId],
+      { lobsterId, actorLobsterIds: [lobsterId], spaceId: SPACE_ID, activityId: SOLO_ACTIVITY_ID },
+      "start_activity",
+      `${displayName}先开了一局单机模式热身，准备等真实对手进场后再加入对战。`,
+      [],
+      createdAt
+    ),
+    buildEvent(
+      { lobsterId, actorLobsterIds: [lobsterId], spaceId: SPACE_ID, activityId: SOLO_ACTIVITY_ID },
+      "finish_activity",
+      `${displayName}完成了一次热身刷分，暂时留在大厅等待下一场真实互动。`,
+      [],
       createdAt
     ),
   ];
@@ -133,41 +138,6 @@ async function ensureOpenClawExists({
   );
 
   await run(
-    `INSERT INTO relationship_summaries
-     (id, lobster_id, target_lobster_id, target_display_name, relationship_type, strength_score, evidence_count, last_changed_at, last_event_id, summary)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      `${lobsterId}_rel_001`,
-      lobsterId,
-      primaryTarget.openClawId,
-      primaryTarget.displayName,
-      "rival",
-      0.72,
-      6,
-      createdAt,
-      seedEvents[3].id,
-      `几次难分高下的对局之后，${primaryTarget.displayName}已经成了${displayName}最值得盯着的宿敌。`,
-    ]
-  );
-  await run(
-    `INSERT INTO relationship_summaries
-     (id, lobster_id, target_lobster_id, target_display_name, relationship_type, strength_score, evidence_count, last_changed_at, last_event_id, summary)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      `${lobsterId}_rel_002`,
-      lobsterId,
-      secondaryTarget.openClawId,
-      secondaryTarget.displayName,
-      "party_preference",
-      0.51,
-      3,
-      createdAt,
-      seedEvents[1].id,
-      `${displayName}总是会不自觉地排到${secondaryTarget.displayName}附近。`,
-    ]
-  );
-
-  await run(
     `INSERT INTO summary_snapshots
      (id, lobster_id, summary_type, title, body_text, highlighted_event_ids_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -176,8 +146,8 @@ async function ensureOpenClawExists({
       lobsterId,
       "latest",
       "最新摘要",
-      `${displayName}上一轮一直在围着${primaryTarget.displayName}活动，赢下一场险局，也让这段宿敌关系更明显了。`,
-      JSON.stringify([seedEvents[2].id, seedEvents[3].id]),
+      `${displayName}已经完成入场观察和热身，目前正留在街机大厅，等待与真实接入的 OpenClaw 发生互动。`,
+      JSON.stringify([seedEvents[0].id, seedEvents[3].id]),
       createdAt,
     ]
   );
@@ -381,7 +351,7 @@ async function getAgentRuntimeContext(agentAccessToken) {
 }
 
 async function getAgentHandoffView(options = {}) {
-  const [latestCode, binding] = await Promise.all([
+  let [latestCode, binding] = await Promise.all([
     get(
       `SELECT * FROM agent_handoff_codes
        WHERE user_id = ?
@@ -397,6 +367,20 @@ async function getAgentHandoffView(options = {}) {
       [OWNER_USER_ID, "active"]
     ),
   ]);
+
+  if (latestCode && latestCode.status === "active" && Date.parse(latestCode.expires_at) <= Date.now()) {
+    const updatedAt = now();
+    await run(
+      "UPDATE agent_handoff_codes SET status = ?, updated_at = ? WHERE id = ?",
+      ["expired", updatedAt, latestCode.id]
+    );
+    latestCode = {
+      ...latestCode,
+      status: "expired",
+      updated_at: updatedAt,
+    };
+  }
+
   const runtime = binding ? await getRuntime(binding.lobster_id) : null;
   const agentStatus = deriveAgentStatus(runtime);
 
@@ -454,7 +438,23 @@ async function submitAgentTick(agentAccessToken, payload) {
 
   const normalizedOutput = normalizeSubmittedTickPayload(payload);
   const happenedAt = now();
+  const safetyCheck = inspectTickSafety(normalizedOutput);
+
   await markOpenClawAgentSeen(token.lobster_id, happenedAt);
+  if (!safetyCheck.ok) {
+    await recordDiagnosticEvent(
+      safetyCheck.diagnosticType,
+      safetyCheck.error,
+      {
+        ruleName: safetyCheck.ruleName,
+        actionType: normalizedOutput.actionType,
+      },
+      happenedAt,
+      token.lobster_id
+    );
+    return { ok: false, status: safetyCheck.status, error: safetyCheck.error };
+  }
+
   const result = await applyTickOutput(normalizedOutput, happenedAt, token.lobster_id);
 
   return {
@@ -765,7 +765,12 @@ async function getSpace() {
 
 async function getRelationships(openClawId = DEFAULT_LOBSTER_ID) {
   const rows = await all(
-    "SELECT * FROM relationship_summaries WHERE lobster_id = ? ORDER BY last_changed_at DESC",
+    `SELECT relationship_summaries.*
+     FROM relationship_summaries
+     INNER JOIN lobster_profiles AS target_profile
+       ON target_profile.id = relationship_summaries.target_lobster_id
+     WHERE relationship_summaries.lobster_id = ?
+     ORDER BY relationship_summaries.last_changed_at DESC`,
     [openClawId]
   );
   return rows.map((row) => ({
@@ -835,20 +840,13 @@ async function listSocialContextCandidates(openClawId, options = {}) {
   });
 }
 
-async function getPrototypeInteractionTargets(openClawId) {
-  const candidates = await listSocialContextCandidates(openClawId, {
-    currentSpaceId: SPACE_ID,
-    limit: 2,
-  });
-  const receptionistNpc = getReceptionNpc();
-  const primaryTarget = candidates[0] || {
-    id: receptionistNpc.id,
-    openClawId: receptionistNpc.id,
-    displayName: receptionistNpc.displayName,
-    identitySummary: receptionistNpc.identitySummary,
-  };
-  const secondaryTarget = candidates[1] || primaryTarget;
-  return [primaryTarget, secondaryTarget];
+async function removeNonOpenClawRelationships() {
+  await run(
+    `DELETE FROM relationship_summaries
+     WHERE target_lobster_id NOT IN (
+       SELECT id FROM lobster_profiles
+     )`
+  );
 }
 
 async function getNearbyOpenClaws(openClawId, currentSpaceId, options = {}) {

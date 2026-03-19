@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 
 const TEST_HOST = "127.0.0.1";
 const TEST_PORT = 3101;
@@ -43,18 +43,7 @@ test("home API and SSE stream expose runtime and diagnostic events", async () =>
 
     const relationships = await fetchJson(`http://${TEST_HOST}:${TEST_PORT}/api/openclaws/lob_001/relationships`);
     assert.equal(relationships.openClawId, "lob_001");
-    assert.ok(relationships.relationships.length > 0);
-    const firstRelationship = relationships.relationships[0];
-    const firstTargetId = firstRelationship.targetOpenClawId || firstRelationship.targetLobsterId;
-    assert.ok(firstTargetId);
-
-    const relationshipDetail = await fetchJson(
-      `http://${TEST_HOST}:${TEST_PORT}/api/openclaws/lob_001/relationships/${firstTargetId}`
-    );
-    assert.equal(relationshipDetail.targetOpenClawId, firstTargetId);
-    assert.equal(relationshipDetail.relationship.targetOpenClawId, firstTargetId);
-    assert.ok(Array.isArray(relationshipDetail.evidenceEvents));
-    assert.ok(relationshipDetail.evidenceEvents.length > 0);
+    assert.deepEqual(relationships.relationships, []);
 
   } finally {
     await stopServer(server);
@@ -188,6 +177,38 @@ test("agent handoff issues a token and exposes runtime context", async () => {
     assert.equal(runtimeContext.profile.displayName, "Agent Clawdia");
     assert.equal(runtimeContext.lobsterId, "lob_001");
     assert.equal(runtimeContext.openClawId, "lob_001");
+  } finally {
+    await stopServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("handoff view marks naturally expired active code as expired", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-social-platform-handoff-expiry-"));
+  const dbPath = path.join(tempDir, "test.db");
+  const port = TEST_PORT + 10;
+  const server = await startServer({
+    PORT: String(port),
+    HOST: TEST_HOST,
+    OPENCLAW_TICK_INTERVAL_MS: "250",
+    OPENCLAW_DB_PATH: dbPath,
+    OPENCLAW_ADAPTER_MODE: "mock",
+  });
+
+  try {
+    const handoffCodeResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/me/agent-handoff-codes`,
+      { expiresInMinutes: 10 }
+    );
+    assert.equal(handoffCodeResponse.statusCode, 201);
+    execFileSync("sqlite3", [
+      dbPath,
+      "UPDATE agent_handoff_codes SET expires_at = datetime('now', '-1 minute') WHERE status = 'active';",
+    ]);
+
+    const handoffView = await fetchJson(`http://${TEST_HOST}:${port}/api/me/agent-handoff`);
+    assert.equal(handoffView.status, "expired");
+    assert.equal(handoffView.latestCode.status, "expired");
   } finally {
     await stopServer(server);
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -364,6 +385,133 @@ test("agent heartbeat keeps OpenClaw online without submitting new actions", asy
     const handoffView = await fetchJson(`http://${TEST_HOST}:${port}/api/me/agent-handoff`);
     assert.equal(handoffView.status, "connected");
     assert.equal(handoffView.connection.agentStatus, "connected");
+  } finally {
+    await stopServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("guardrails block high-risk action types submitted by agent", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-social-platform-guardrail-action-"));
+  const dbPath = path.join(tempDir, "test.db");
+  const port = TEST_PORT + 8;
+  const server = await startServer({
+    PORT: String(port),
+    HOST: TEST_HOST,
+    OPENCLAW_TICK_INTERVAL_MS: "5000",
+    OPENCLAW_DB_PATH: dbPath,
+    OPENCLAW_ADAPTER_MODE: "mock",
+  });
+
+  try {
+    const handoffCodeResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/me/agent-handoff-codes`,
+      { expiresInMinutes: 10 }
+    );
+    const handoffCodePayload = JSON.parse(handoffCodeResponse.body);
+
+    const handoffResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/agent-auth/handoff`,
+      {
+        ownerAccountId: handoffCodePayload.ownerAccountId,
+        handoffCode: handoffCodePayload.handoffCode,
+        openClawIdentity: {
+          openClawKey: "agent-clawdia-guardrail-action",
+          displayName: "Agent Clawdia Guardrail Action",
+        },
+      }
+    );
+    const handoffPayload = JSON.parse(handoffResponse.body);
+
+    const tickResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/agent/me/ticks`,
+      {
+        actionType: "payment",
+        emittedEvents: [
+          {
+            type: "payment",
+            payload: {
+              summary: "Attempted to pay for an arcade pass.",
+              relatedLobsterIds: [],
+            },
+          },
+        ],
+      },
+      {
+        Authorization: `Bearer ${handoffPayload.agentAccessToken}`,
+      }
+    );
+
+    assert.equal(tickResponse.statusCode, 422);
+    const errorPayload = JSON.parse(tickResponse.body);
+    assert.match(errorPayload.error, /not allowed by safety guardrails/i);
+
+    const events = await fetchJson(`http://${TEST_HOST}:${port}/api/openclaws/lob_001/events?limit=5`);
+    assert.ok(events.events.some((event) => event.type === "guardrail_high_risk_action_blocked"));
+  } finally {
+    await stopServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("guardrails block sensitive content in submitted events", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-social-platform-guardrail-content-"));
+  const dbPath = path.join(tempDir, "test.db");
+  const port = TEST_PORT + 9;
+  const server = await startServer({
+    PORT: String(port),
+    HOST: TEST_HOST,
+    OPENCLAW_TICK_INTERVAL_MS: "5000",
+    OPENCLAW_DB_PATH: dbPath,
+    OPENCLAW_ADAPTER_MODE: "mock",
+  });
+
+  try {
+    const handoffCodeResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/me/agent-handoff-codes`,
+      { expiresInMinutes: 10 }
+    );
+    const handoffCodePayload = JSON.parse(handoffCodeResponse.body);
+
+    const handoffResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/agent-auth/handoff`,
+      {
+        ownerAccountId: handoffCodePayload.ownerAccountId,
+        handoffCode: handoffCodePayload.handoffCode,
+        openClawIdentity: {
+          openClawKey: "agent-clawdia-guardrail-content",
+          displayName: "Agent Clawdia Guardrail Content",
+        },
+      }
+    );
+    const handoffPayload = JSON.parse(handoffResponse.body);
+
+    const tickResponse = await postJson(
+      `http://${TEST_HOST}:${port}/api/agent/me/ticks`,
+      {
+        actionType: "post_created",
+        emittedEvents: [
+          {
+            type: "post_created",
+            payload: {
+              summary: `Sharing secret handoff code ${handoffCodePayload.handoffCode} in public.`,
+              relatedLobsterIds: [],
+            },
+          },
+        ],
+      },
+      {
+        Authorization: `Bearer ${handoffPayload.agentAccessToken}`,
+      }
+    );
+
+    assert.equal(tickResponse.statusCode, 422);
+    const errorPayload = JSON.parse(tickResponse.body);
+    assert.match(errorPayload.error, /sensitive information/i);
+
+    const events = await fetchJson(`http://${TEST_HOST}:${port}/api/openclaws/lob_001/events?limit=5`);
+    assert.ok(events.events.some((event) => event.type === "guardrail_sensitive_content_blocked"));
+    assert.ok(events.events.every((event) => !event.payload.summary.includes(handoffCodePayload.handoffCode)));
   } finally {
     await stopServer(server);
     fs.rmSync(tempDir, { recursive: true, force: true });
