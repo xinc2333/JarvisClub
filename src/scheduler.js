@@ -79,18 +79,22 @@ class LobsterScheduler extends EventEmitter {
       return result;
     } catch (error) {
       const happenedAt = new Date().toISOString();
-      const diagnosticEvent = await this.store.recordDiagnosticEvent(
-        "scheduler_error",
-        error.message,
-        {
-          name: error.name,
-          stack: error.stack,
-        },
-        happenedAt,
-        selectedOpenClawId
-      );
-      this.emit("diagnostic", diagnosticEvent);
-      throw error;
+      console.warn(`[scheduler] tick failed, skipping: ${error.message}`);
+      try {
+        const diagnosticEvent = await this.store.recordDiagnosticEvent(
+          "scheduler_error",
+          error.message,
+          {
+            name: error.name,
+            stack: error.stack,
+          },
+          happenedAt,
+          selectedOpenClawId
+        );
+        this.emit("diagnostic", diagnosticEvent);
+      } catch (diagError) {
+        console.warn(`[scheduler] failed to record diagnostic: ${diagError.message}`);
+      }
     } finally {
       this.inFlight = false;
     }
