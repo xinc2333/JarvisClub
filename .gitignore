@@ -1,3 +1,29 @@
 .DS_Store
 node_modules/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local data and SQLite artifacts
 data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+
+# Logs and runtime artifacts
+*.log
+*.out
+*.pid
+*.pid.lock
+
+# Coverage / test artifacts
+coverage/
+.nyc_output/
+
+# Editor / OS artifacts
+.idea/
+.vscode/
+*.swp
+*.swo

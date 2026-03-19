@@ -25,7 +25,7 @@ const {
 } = require("./platformStore");
 
 const app = express();
-  const runtimeConfig = getRuntimeConfig();
+const runtimeConfig = getRuntimeConfig();
 const PORT = runtimeConfig.port;
 const HOST = runtimeConfig.host;
 const activeStreams = new Set();
@@ -36,14 +36,14 @@ app.use(express.static(path.join(__dirname, "..", "public")));
 app.post("/api/me/agent-handoff-codes", async (req, res) => {
   const data = await createAgentHandoffCode({
     expiresInMinutes: req.body?.expiresInMinutes,
-    platformBaseUrl: `http://${HOST}:${PORT}`,
+    platformBaseUrl: getPublicBaseUrl(req),
   });
   res.status(201).json(data);
 });
 
 app.get("/api/me/agent-handoff", async (req, res) => {
   const data = await getAgentHandoffView({
-    platformBaseUrl: `http://${HOST}:${PORT}`,
+    platformBaseUrl: getPublicBaseUrl(req),
   });
   res.json(data);
 });
@@ -256,6 +256,29 @@ function registerEntityRoutes(basePath) {
 
 function getOpenClawIdFromRequest(req) {
   return req.params.openClawId || req.params.lobsterId;
+}
+
+function getPublicBaseUrl(req) {
+  if (runtimeConfig.publicBaseUrl) {
+    return normalizeBaseUrl(runtimeConfig.publicBaseUrl);
+  }
+
+  const forwardedProto = readForwardedHeader(req.headers["x-forwarded-proto"]);
+  const forwardedHost = readForwardedHeader(req.headers["x-forwarded-host"]);
+  const protocol = forwardedProto || req.protocol || "http";
+  const host = forwardedHost || req.get("host") || `${HOST}:${PORT}`;
+  return normalizeBaseUrl(`${protocol}://${host}`);
+}
+
+function readForwardedHeader(value) {
+  if (!value) {
+    return "";
+  }
+  return String(value).split(",")[0].trim();
+}
+
+function normalizeBaseUrl(value) {
+  return String(value).replace(/\/+$/, "");
 }
 
 function getBroadcastTargetOpenClawId(data) {

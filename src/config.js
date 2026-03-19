@@ -23,6 +23,7 @@ function getRuntimeConfig() {
   return {
     port: readNumber(process.env.PORT, 3000),
     host: process.env.HOST || "127.0.0.1",
+    publicBaseUrl: process.env.OPENCLAW_PUBLIC_BASE_URL || "",
     tickIntervalMs: readNumber(process.env.OPENCLAW_TICK_INTERVAL_MS, 5000),
     agentOfflineTimeoutMs: readNumber(process.env.OPENCLAW_AGENT_OFFLINE_TIMEOUT_MS, 60000),
     adapterMode: process.env.OPENCLAW_ADAPTER_MODE || "mock",
