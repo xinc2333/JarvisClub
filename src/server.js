@@ -22,6 +22,7 @@ const {
   applyTickOutput,
   recordDiagnosticEvent,
   listSchedulableOpenClawIds,
+  connectService,
 } = require("./platformStore");
 
 const app = express();
@@ -32,6 +33,21 @@ const activeStreams = new Set();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
+
+app.post("/api/me/connect-service", async (req, res) => {
+  try {
+    const result = await connectService();
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    broadcast({ type: "runtime", runtime: result.data.runtime });
+    res.status(200).json(result.data);
+  } catch (error) {
+    console.error("connect-service error:", error);
+    res.status(500).json({ error: error.message || "Internal server error" });
+  }
+});
 
 app.post("/api/me/agent-handoff-codes", async (req, res) => {
   const data = await createAgentHandoffCode({
@@ -244,10 +260,16 @@ function registerEntityRoutes(basePath) {
     getSpectateView(openClawId).then((view) => {
       sendSse(res, { type: "runtime", runtime: view.runtime });
     });
+
+    const keepaliveTimer = setInterval(() => {
+      res.write(":keepalive\n\n");
+    }, 15000);
+
     const stream = { res, openClawId };
     activeStreams.add(stream);
 
     req.on("close", () => {
+      clearInterval(keepaliveTimer);
       activeStreams.delete(stream);
       res.end();
     });

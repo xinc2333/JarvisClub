@@ -880,12 +880,16 @@ async function getNearbyOpenClaws(openClawId, currentSpaceId, options = {}) {
 }
 
 async function listSchedulableOpenClawIds() {
+  const offlineThresholdMs = runtimeConfig.agentOfflineTimeoutMs;
+  const cutoff = new Date(Date.now() - offlineThresholdMs).toISOString();
+
   const rows = await all(
     `SELECT DISTINCT lobster_id
      FROM lobster_runtime_states
      WHERE scheduler_mode = ?
+        OR (scheduler_mode = ? AND (last_agent_seen_at IS NULL OR last_agent_seen_at < ?))
      ORDER BY updated_at ASC, lobster_id ASC`,
-    ["platform_tick"]
+    ["platform_tick", "agent_self_driven", cutoff]
   );
   return rows.map((row) => row.lobster_id).filter(Boolean);
 }
@@ -1210,6 +1214,31 @@ function mapEvent(row) {
   };
 }
 
+async function connectService(openClawId = DEFAULT_LOBSTER_ID) {
+  const existing = await get("SELECT id FROM lobster_profiles WHERE id = ?", [openClawId]);
+  if (!existing) {
+    return { ok: false, status: 404, error: "OpenClaw not found." };
+  }
+
+  const seenAt = now();
+  await run(
+    `UPDATE lobster_runtime_states
+     SET scheduler_mode = ?, last_agent_seen_at = ?, updated_at = ?
+     WHERE lobster_id = ?`,
+    ["platform_tick", seenAt, seenAt, openClawId]
+  );
+
+  return {
+    ok: true,
+    data: {
+      openClawId,
+      schedulerMode: "platform_tick",
+      connectedAt: seenAt,
+      runtime: await getRuntime(openClawId),
+    },
+  };
+}
+
 module.exports = {
   initializeStore,
   getProfile,
@@ -1229,4 +1258,5 @@ module.exports = {
   buildTickInput,
   applyTickOutput,
   recordDiagnosticEvent,
+  connectService,
 };

@@ -22,7 +22,7 @@ const watchTabButtons = Array.from(document.querySelectorAll("[data-watch-tab]")
 const eventFilterButtons = Array.from(document.querySelectorAll("[data-event-filter]"));
 
 copyHandoffPrimaryBtn.addEventListener("click", async () => {
-  await copyOrPrepareHandoffMessage();
+  await connectToService();
 });
 
 watchTabButtons.forEach((button) => {
@@ -53,12 +53,12 @@ async function boot() {
   await loadHandoffView();
   startHandoffPolling();
   if (state.handoffView?.connection?.status === "active") {
+    copyHandoffPrimaryBtn.style.display = "none";
+    document.getElementById("handoffMessageSection").classList.add("hidden");
+    setConnectionStatus(true);
     await loadConnectedViews();
-    if (state.handoffView?.connection?.agentStatus !== "connected") {
-      await ensureHandoffReady();
-    }
+    startStream();
   } else {
-    await ensureHandoffReady();
     renderDisconnectedDashboard();
   }
   applyLayoutState();
@@ -208,14 +208,16 @@ function renderTopBar() {
   const handoff = state.handoffView;
   const connection = handoff?.connection || null;
   const hasBinding = connection?.status === "active";
-  const isOnline = connection?.agentStatus === "connected";
+  const isOnline = connection?.agentStatus === "connected" || connection?.agentStatus === "platform_driven";
   const runtime = state.home?.runtime || state.spectate?.runtime || null;
   const displayName = state.profile?.displayName || connection?.openClawId || "尚未接入 OpenClaw";
 
   document.getElementById("topStatusName").textContent = hasBinding ? displayName : "尚未接入 OpenClaw";
   document.getElementById("topStatusSummary").textContent = buildTopSummary(handoff, runtime);
   setConnectionStatus(isOnline);
-  copyHandoffPrimaryBtn.disabled = false;
+  if (isOnline) {
+    copyHandoffPrimaryBtn.style.display = "none";
+  }
 }
 
 function renderWatchTabs() {
@@ -540,6 +542,53 @@ async function ensureHandoffReady() {
   await generateHandoffCode();
 }
 
+async function connectToService() {
+  copyHandoffPrimaryBtn.disabled = true;
+  copyHandoffPrimaryBtn.textContent = "连接中...";
+  setHandoffStatus("连接中");
+
+  try {
+    const response = await fetch("/api/me/connect-service", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || "连接失败");
+    }
+
+    const data = await response.json();
+    state.openClawId = data.openClawId;
+
+    copyHandoffPrimaryBtn.style.display = "none";
+    setHandoffStatus("在线中");
+    setConnectionStatus(true);
+
+    renderHandoffMessageContent(`
+      <div class="list-item">
+        <strong>已连接到服务</strong>
+        <p>你的 OpenClaw 已接入平台，正在自动运行中。</p>
+      </div>
+    `);
+
+    await loadHandoffView();
+    await loadConnectedViews();
+    startStream();
+    applyLayoutState();
+  } catch (error) {
+    copyHandoffPrimaryBtn.disabled = false;
+    copyHandoffPrimaryBtn.textContent = "连接服务";
+    setHandoffStatus("失败");
+    renderHandoffMessageContent(`
+      <div class="list-item">
+        <strong>连接失败</strong>
+        <p>${error.message}，请稍后重试。</p>
+      </div>
+    `);
+  }
+}
+
 async function copyOrPrepareHandoffMessage() {
   if (!state.handoffPackage?.handoffCode) {
     await ensureHandoffReady();
@@ -564,7 +613,7 @@ function renderHandoffState(handoff) {
   state.handoffView = handoff;
   const hasBinding = handoff.connection?.status === "active";
   const agentStatus = handoff.connection?.agentStatus || "waiting";
-  const connected = hasBinding && agentStatus === "connected";
+  const connected = hasBinding && (agentStatus === "connected" || agentStatus === "platform_driven");
 
   if (hasBinding && (handoff.connection.openClawId || handoff.connection.lobsterId)) {
     state.openClawId = handoff.connection.openClawId || handoff.connection.lobsterId;
@@ -579,6 +628,9 @@ function renderHandoffState(handoff) {
 
   if (connected) {
     setHandoffStatus("在线中");
+    setConnectionStatus(true);
+    copyHandoffPrimaryBtn.style.display = "none";
+    document.getElementById("handoffMessageSection").classList.add("hidden");
     renderHandoffStatusContent(`
       <div class="list-item">
         <strong>在线活动中</strong>
