@@ -198,6 +198,20 @@ async function initDatabase() {
       updated_at TEXT NOT NULL
     )
   `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS agent_api_keys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      lobster_id TEXT,
+      key_hash TEXT NOT NULL,
+      display_label TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      last_connected_at TEXT,
+      revoked_at TEXT
+    )
+  `);
 }
 
 module.exports = {

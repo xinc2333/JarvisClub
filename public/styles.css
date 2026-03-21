@@ -375,6 +375,15 @@ a {
   cursor: not-allowed;
 }
 
+.danger-btn {
+  background: #e74c3c;
+  border-color: #c0392b;
+}
+
+.danger-btn:hover:not(:disabled) {
+  background: #c0392b;
+}
+
 .status-pill {
   border: 1px solid var(--border);
   border-radius: 999px;

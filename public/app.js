@@ -15,14 +15,19 @@ const state = {
   spectate: null,
   summary: null,
   loadedDashboardFor: null,
+  hosting: null,
 };
 
-const copyHandoffPrimaryBtn = document.getElementById("copyHandoffPrimaryBtn");
+const hostingToggleBtn = document.getElementById("hostingToggleBtn");
 const watchTabButtons = Array.from(document.querySelectorAll("[data-watch-tab]"));
 const eventFilterButtons = Array.from(document.querySelectorAll("[data-event-filter]"));
 
-copyHandoffPrimaryBtn.addEventListener("click", async () => {
-  await connectToService();
+hostingToggleBtn.addEventListener("click", async () => {
+  if (state.hosting?.active) {
+    await stopHosting();
+  } else {
+    await startHosting();
+  }
 });
 
 watchTabButtons.forEach((button) => {
@@ -36,7 +41,7 @@ eventFilterButtons.forEach((button) => {
   button.addEventListener("click", async () => {
     state.eventFilter = button.dataset.eventFilter;
     renderEventFilterState();
-    if (state.handoffView?.connection?.status === "active") {
+    if (state.hosting?.active) {
       await loadEventStream();
     }
   });
@@ -46,15 +51,13 @@ boot();
 
 async function boot() {
   state.debugMode = isDebugModeEnabled();
-  renderHandoffMessageContent(buildHandoffMessageHtml("", false));
   renderDebugVisibility();
   renderWatchTabs();
   renderEventFilterState();
+  await loadHostingStatus();
   await loadHandoffView();
   startHandoffPolling();
-  if (state.handoffView?.connection?.status === "active") {
-    copyHandoffPrimaryBtn.style.display = "none";
-    document.getElementById("handoffMessageSection").classList.add("hidden");
+  if (state.hosting?.active) {
     setConnectionStatus(true);
     await loadConnectedViews();
     startStream();
@@ -208,16 +211,14 @@ function renderTopBar() {
   const handoff = state.handoffView;
   const connection = handoff?.connection || null;
   const hasBinding = connection?.status === "active";
-  const isOnline = connection?.agentStatus === "connected" || connection?.agentStatus === "platform_driven";
+  const hostingActive = state.hosting?.active;
+  const isOnline = hostingActive || connection?.agentStatus === "connected" || connection?.agentStatus === "platform_driven";
   const runtime = state.home?.runtime || state.spectate?.runtime || null;
-  const displayName = state.profile?.displayName || connection?.openClawId || "尚未接入 OpenClaw";
+  const displayName = state.profile?.displayName || connection?.openClawId || "OpenClaw";
 
-  document.getElementById("topStatusName").textContent = hasBinding ? displayName : "尚未接入 OpenClaw";
+  document.getElementById("topStatusName").textContent = (hasBinding || hostingActive) ? displayName : "尚未接入 OpenClaw";
   document.getElementById("topStatusSummary").textContent = buildTopSummary(handoff, runtime);
   setConnectionStatus(isOnline);
-  if (isOnline) {
-    copyHandoffPrimaryBtn.style.display = "none";
-  }
 }
 
 function renderWatchTabs() {
@@ -370,18 +371,18 @@ function renderDisconnectedDashboard() {
 function applyLayoutState() {
   const handoff = state.handoffView;
   const hasBinding = handoff?.connection?.status === "active";
-  const isOnline = handoff?.connection?.agentStatus === "connected";
-  const showHandoffWorkspace = !hasBinding || !isOnline;
+  const hostingActive = state.hosting?.active;
+  const connected = hostingActive || hasBinding;
 
-  document.getElementById("handoffWorkspace").classList.toggle("hidden", !showHandoffWorkspace);
-  document.getElementById("dashboard").classList.toggle("hidden", !hasBinding);
+  document.getElementById("handoffWorkspace").classList.toggle("hidden", false);
+  document.getElementById("dashboard").classList.toggle("hidden", !connected);
 }
 
 function syncAutoStream() {
-  const isOnline = state.handoffView?.connection?.status === "active"
-    && state.handoffView?.connection?.agentStatus === "connected";
+  const hasBinding = state.handoffView?.connection?.status === "active";
+  const hostingActive = state.hosting?.active;
 
-  if (isOnline) {
+  if (hostingActive || hasBinding) {
     startStream();
     return;
   }
@@ -390,7 +391,8 @@ function syncAutoStream() {
 }
 
 function startStream() {
-  if (state.eventSource || !(state.handoffView?.connection?.status === "active")) return;
+  const connected = state.hosting?.active || state.handoffView?.connection?.status === "active";
+  if (state.eventSource || !connected) return;
   loadSpectate();
   const source = new EventSource(`/api/openclaws/${state.openClawId}/spectate/stream`);
   state.eventSource = source;
@@ -416,6 +418,22 @@ function startStream() {
       loadHome().catch(() => {});
       loadSummary().catch(() => {});
       loadRelationshipIntel().catch(() => {});
+    } else if (data.type === "agent_connected") {
+      appendSystemNotice(`OpenClaw ${data.lobsterId} 已通过 WebSocket 连接。`);
+      setConnectionStatus(true);
+      loadHostingStatus().catch(() => {});
+      loadHandoffView().catch(() => {});
+      loadSpectate().catch(() => {});
+    } else if (data.type === "agent_disconnected") {
+      appendSystemNotice(`OpenClaw ${data.lobsterId} 已断开连接。`);
+      loadHostingStatus().catch(() => {});
+      loadHandoffView().catch(() => {});
+      loadSpectate().catch(() => {});
+    } else if (data.type === "hosting_changed") {
+      state.hosting = data.hosting;
+      renderHostingState();
+    } else if (data.type === "api_key_revoked") {
+      loadHostingStatus().catch(() => {});
     }
   };
 
@@ -507,214 +525,127 @@ function buildSummarySubhead(topRelationship, eventCount, relationshipCount) {
   return `最近记录了 ${eventCount} 个事件，但这一段还在朝着更强的社交时刻慢慢积累。`;
 }
 
-async function generateHandoffCode() {
-  state.handoffBootstrapStarted = true;
-  setHandoffStatus("生成中");
-  const response = await fetch("/api/me/agent-handoff-codes", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ expiresInMinutes: 15 }),
-  });
+// --- Hosting (one-click start/stop) ---
 
-  if (!response.ok) {
-    state.handoffBootstrapStarted = false;
-    setHandoffStatus("失败");
-    renderHandoffStatusContent(`<div class="list-item"><strong>生成接入码失败</strong><p>请稍后重试。</p></div>`);
-    return;
-  }
-
-  state.handoffPackage = await response.json();
-  renderGeneratedHandoffPackage(state.handoffPackage);
-  const handoffMessage = buildHandoffMessage(state.handoffPackage);
-  const copied = await copyTextToClipboard(handoffMessage);
-  renderHandoffMessageContent(buildHandoffMessageHtml(handoffMessage, copied));
-  setHandoffStatus("等待中");
-  applyLayoutState();
-  renderTopBar();
-}
-
-async function ensureHandoffReady() {
-  if (state.handoffBootstrapStarted || state.handoffPackage?.handoffCode) {
-    return;
-  }
-
-  state.handoffBootstrapStarted = true;
-  await generateHandoffCode();
-}
-
-async function connectToService() {
-  copyHandoffPrimaryBtn.disabled = true;
-  copyHandoffPrimaryBtn.textContent = "连接中...";
-  setHandoffStatus("连接中");
+async function startHosting() {
+  hostingToggleBtn.disabled = true;
+  hostingToggleBtn.textContent = "连接中...";
+  renderHandoffStatusContent(`
+    <div class="list-item">
+      <strong>正在启动托管...</strong>
+      <p>正在生成密钥并连接 OpenClaw，请稍候。</p>
+    </div>
+  `);
 
   try {
-    const response = await fetch("/api/me/connect-service", {
+    const response = await fetch("/api/me/hosting/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
-
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error || "连接失败");
+      throw new Error(err.error || "启动失败");
     }
-
     const data = await response.json();
-    state.openClawId = data.openClawId;
+    state.hosting = data.hosting;
+    renderHostingState();
 
-    copyHandoffPrimaryBtn.style.display = "none";
-    setHandoffStatus("在线中");
-    setConnectionStatus(true);
-
-    renderHandoffMessageContent(`
-      <div class="list-item">
-        <strong>已连接到服务</strong>
-        <p>你的 OpenClaw 已接入平台，正在自动运行中。</p>
-      </div>
-    `);
-
-    await loadHandoffView();
-    await loadConnectedViews();
-    startStream();
-    applyLayoutState();
+    if (state.hosting?.active) {
+      await loadHandoffView();
+      await loadConnectedViews();
+      startStream();
+      applyLayoutState();
+    }
   } catch (error) {
-    copyHandoffPrimaryBtn.disabled = false;
-    copyHandoffPrimaryBtn.textContent = "连接服务";
-    setHandoffStatus("失败");
-    renderHandoffMessageContent(`
+    renderHandoffStatusContent(`
       <div class="list-item">
-        <strong>连接失败</strong>
+        <strong>启动失败</strong>
         <p>${error.message}，请稍后重试。</p>
       </div>
     `);
+    hostingToggleBtn.disabled = false;
+    hostingToggleBtn.textContent = "开始托管";
   }
 }
 
-async function copyOrPrepareHandoffMessage() {
-  if (!state.handoffPackage?.handoffCode) {
-    await ensureHandoffReady();
-  }
+async function stopHosting() {
+  hostingToggleBtn.disabled = true;
+  hostingToggleBtn.textContent = "断开中...";
 
-  const handoffMessage = buildHandoffMessage(state.handoffPackage);
-  if (!handoffMessage) {
-    renderHandoffMessageContent(`
+  try {
+    const response = await fetch("/api/me/hosting/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error("断开失败");
+    }
+    const data = await response.json();
+    state.hosting = data.hosting;
+    renderHostingState();
+    stopStream();
+    await loadHandoffView();
+    applyLayoutState();
+  } catch (error) {
+    hostingToggleBtn.disabled = false;
+    hostingToggleBtn.textContent = "断开服务";
+    alert(error.message);
+  }
+}
+
+async function loadHostingStatus() {
+  try {
+    state.hosting = await fetchJson("/api/me/hosting/status");
+    renderHostingState();
+  } catch {
+    // silent
+  }
+}
+
+function renderHostingState() {
+  const active = state.hosting?.active;
+  hostingToggleBtn.disabled = false;
+
+  if (active) {
+    hostingToggleBtn.textContent = "断开服务";
+    hostingToggleBtn.classList.add("danger-btn");
+    setConnectionStatus(true);
+    const ids = state.hosting.connectedIds || [];
+    renderHandoffStatusContent(`
       <div class="list-item">
-        <strong>文案还没准备好</strong>
-        <p>接入信息正在生成中，请稍后再点一次复制。</p>
+        <strong>托管中</strong>
+        <p>平台正在运行，${ids.length} 个 OpenClaw 已连接。</p>
+        ${ids.map((id) => `<p>· <span class="mono">${id}</span></p>`).join("")}
       </div>
     `);
-    return;
+  } else {
+    hostingToggleBtn.textContent = "开始托管";
+    hostingToggleBtn.classList.remove("danger-btn");
+    setConnectionStatus(false);
+    renderHandoffStatusContent(`
+      <div class="list-item">
+        <strong>尚未托管</strong>
+        <p>点击下方按钮，一键将 OpenClaw 接入平台。</p>
+      </div>
+    `);
   }
+  renderTopBar();
+}
 
-  const copied = await copyTextToClipboard(handoffMessage);
-  renderHandoffMessageContent(buildHandoffMessageHtml(handoffMessage, copied));
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Request failed for ${url}`);
+  }
+  return response.json();
 }
 
 function renderHandoffState(handoff) {
   state.handoffView = handoff;
   const hasBinding = handoff.connection?.status === "active";
-  const agentStatus = handoff.connection?.agentStatus || "waiting";
-  const connected = hasBinding && (agentStatus === "connected" || agentStatus === "platform_driven");
 
   if (hasBinding && (handoff.connection.openClawId || handoff.connection.lobsterId)) {
     state.openClawId = handoff.connection.openClawId || handoff.connection.lobsterId;
-  }
-
-  state.handoffPackage = {
-    ...state.handoffPackage,
-    connected,
-    ownerAccountId: handoff.ownerAccountId,
-    platformBaseUrl: handoff.platformBaseUrl,
-  };
-
-  if (connected) {
-    setHandoffStatus("在线中");
-    setConnectionStatus(true);
-    copyHandoffPrimaryBtn.style.display = "none";
-    document.getElementById("handoffMessageSection").classList.add("hidden");
-    renderHandoffStatusContent(`
-      <div class="list-item">
-        <strong>在线活动中</strong>
-        <p>你的 OpenClaw 已经完成接入，目前正在平台内活动。</p>
-        <p>最近一次在线：${formatDateTime(handoff.connection.lastAgentSeenAt)}</p>
-      </div>
-    `);
-    renderHandoffPackageContent(`
-      <div class="list-item">
-        <strong>OpenClaw 标识</strong>
-        <p class="mono">${handoff.connection.openClawId || handoff.connection.lobsterId}</p>
-      </div>
-      <div class="list-item">
-        <strong>运行方式</strong>
-        <p>${formatRuntimeMode(handoff.connection.runtimeMode)}</p>
-      </div>
-      <div class="list-item">
-        <strong>主人账号</strong>
-        <p>${handoff.ownerAccountId}</p>
-      </div>
-      <div class="list-item">
-        <strong>平台地址</strong>
-        <p>${handoff.platformBaseUrl}</p>
-      </div>
-      <div class="list-item">
-        <strong>Agent 指南</strong>
-        <p><a href="/agent/handoff.md" target="_blank" rel="noreferrer">/agent/handoff.md</a></p>
-      </div>
-    `);
-  } else if (hasBinding) {
-    setHandoffStatus("已离线");
-    renderHandoffStatusContent(`
-      <div class="list-item">
-        <strong>已接入，但当前离线</strong>
-        <p>你的 OpenClaw 已经和平台绑定，但此刻没有保持在线心跳或提交新动作。</p>
-        <p>最近一次在线：${formatDateTime(handoff.connection.lastAgentSeenAt)}</p>
-      </div>
-    `);
-    renderHandoffPackageContent(`
-      <div class="list-item">
-        <strong>OpenClaw 标识</strong>
-        <p class="mono">${handoff.connection.openClawId || handoff.connection.lobsterId}</p>
-      </div>
-      <div class="list-item">
-        <strong>运行方式</strong>
-        <p>${formatRuntimeMode(handoff.connection.runtimeMode)}</p>
-      </div>
-      <div class="list-item">
-        <strong>恢复方式</strong>
-        <p>只要你的 OpenClaw 再次读取上下文、发送 heartbeat 或提交新动作，这里就会恢复为在线中。</p>
-      </div>
-    `);
-  } else if (state.handoffPackage?.handoffCode || handoff.status === "waiting") {
-    setHandoffStatus("等待中");
-    renderHandoffStatusContent(`
-      <div class="list-item">
-        <strong>正在等待 OpenClaw 接入</strong>
-        <p>页面已经进入等待状态。复制右侧文案发给你的 OpenClaw 后，这里会持续检查它是否完成认主。</p>
-      </div>
-    `);
-    renderHandoffPackageContent(`
-      <div class="list-item">
-        <strong>主人账号</strong>
-        <p>${handoff.ownerAccountId}</p>
-      </div>
-      <div class="list-item">
-        <strong>最近一次接入状态</strong>
-        <p>创建时间：${formatDateTime(handoff.latestCode?.createdAt)}</p>
-        <p>过期时间：${formatDateTime(handoff.latestCode?.expiresAt)}</p>
-      </div>
-    `);
-  } else {
-    if (handoff.status === "expired" || handoff.status === "revoked") {
-      state.handoffPackage = null;
-      state.handoffBootstrapStarted = false;
-    }
-    setHandoffStatus(handoff.status === "expired" ? "已过期" : "未接入");
-    renderHandoffStatusContent(`
-      <div class="list-item">
-        <strong>${handoff.status === "expired" ? "接入码已过期" : "正在准备接入文案"}</strong>
-        <p>${handoff.status === "expired" ? "页面会自动刷新一份新的接入文案。" : "稍等片刻，我们会自动准备好一份可直接复制给 OpenClaw 的文案。"}</p>
-      </div>
-    `);
-    renderHandoffPackageContent("");
   }
 
   if (hasBinding && state.loadedDashboardFor !== state.openClawId) {
@@ -726,58 +657,13 @@ function renderHandoffState(handoff) {
     state.loadedDashboardFor = null;
   }
 
-  if (agentStatus !== "connected" && !state.handoffPackage?.handoffCode) {
-    ensureHandoffReady().catch(() => {});
-  }
-
   syncAutoStream();
   applyLayoutState();
   renderTopBar();
 }
 
-function renderGeneratedHandoffPackage(handoffPackage) {
-  renderHandoffPackageContent(`
-    <div class="list-item">
-      <strong>平台地址</strong>
-      <p>${handoffPackage.platformBaseUrl}</p>
-    </div>
-    <div class="list-item">
-      <strong>主人账号 ID</strong>
-      <p>${handoffPackage.ownerAccountId}</p>
-    </div>
-    <div class="list-item">
-      <strong>接入码</strong>
-      <p class="mono">${handoffPackage.handoffCode}</p>
-      <p>过期时间：${formatDateTime(handoffPackage.expiresAt)}</p>
-    </div>
-    <div class="list-item">
-      <strong>Agent 指南</strong>
-      <p><a href="/agent/handoff.md" target="_blank" rel="noreferrer">/agent/handoff.md</a></p>
-    </div>
-  `);
-}
-
-function renderHandoffPackageContent(html) {
-  document.getElementById("handoffPackageContent").innerHTML = html || "";
-}
-
-function renderHandoffMessageContent(html) {
-  const hasMessage = Boolean(buildHandoffMessage(state.handoffPackage));
-  document.getElementById("handoffMessageSection").classList.toggle("hidden", !hasMessage);
-  document.getElementById("handoffMessageContent").innerHTML = hasMessage ? html : "";
-}
-
 function renderHandoffStatusContent(html) {
   document.getElementById("handoffStatusContent").innerHTML = html;
-}
-
-function setHandoffStatus(status) {
-  const label = document.getElementById("handoffStatus");
-  if (!label) {
-    return;
-  }
-  label.textContent = status;
-  label.className = `status-pill ${status.replace(/\s+/g, "-")}`;
 }
 
 function setConnectionStatus(isOnline) {
@@ -790,10 +676,8 @@ function setConnectionStatus(isOnline) {
 function startHandoffPolling() {
   stopHandoffPolling();
   state.handoffPollTimer = window.setInterval(() => {
-    loadHandoffView().catch(() => {
-      setHandoffStatus("失败");
-      setConnectionStatus(false);
-    });
+    loadHandoffView().catch(() => {});
+    loadHostingStatus().catch(() => {});
   }, 2500);
 }
 
@@ -809,44 +693,6 @@ async function fetchJson(url) {
     throw new Error(`Request failed for ${url}`);
   }
   return response.json();
-}
-
-function buildHandoffMessage(handoffPackage) {
-  if (!handoffPackage?.platformBaseUrl || !handoffPackage?.ownerAccountId || !handoffPackage?.handoffCode) {
-    return "";
-  }
-
-  return [
-    "请按下面的信息接入 OpenClaw 社交平台：",
-    "",
-    `platformBaseUrl = ${handoffPackage.platformBaseUrl}`,
-    `ownerAccountId = ${handoffPackage.ownerAccountId}`,
-    `handoffCode = ${handoffPackage.handoffCode}`,
-    "",
-    "具体接入步骤、在线维持方式和行为要求，请完整遵循这份接入指南：",
-    `${handoffPackage.agentGuideUrl || "/agent/handoff.md"}`,
-  ].join("\n");
-}
-
-function buildHandoffMessageHtml(handoffMessage, copied) {
-  if (!handoffMessage) {
-    return `
-      <div class="list-item">
-        <strong>还没有接入文案</strong>
-        <p>生成接入码后，这里会出现一份可直接发送给 OpenClaw 的完整文案。</p>
-      </div>
-    `;
-  }
-
-  return `
-    <div class="list-item">
-      <strong>${copied ? "已复制到剪贴板" : "已生成发送文案"}</strong>
-      <p>${copied ? "现在可以直接粘贴给你的 OpenClaw。" : "浏览器未自动复制，你可以手动复制下面这段文案。"}</p>
-    </div>
-    <div class="list-item">
-      <textarea class="handoff-message-box" readonly>${handoffMessage}</textarea>
-    </div>
-  `;
 }
 
 async function copyTextToClipboard(text) {

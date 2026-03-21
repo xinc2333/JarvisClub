@@ -5,6 +5,7 @@ class LobsterScheduler extends EventEmitter {
     super();
     this.adapter = options.adapter;
     this.store = options.store;
+    this.wsManager = options.wsManager || null;
     this.intervalMs = options.intervalMs || 5000;
     this.timer = null;
     this.running = false;
@@ -43,7 +44,15 @@ class LobsterScheduler extends EventEmitter {
       this.nextIndex = (this.nextIndex + 1) % schedulableOpenClawIds.length;
 
       const input = await this.store.buildTickInput(openClawId);
-      const output = await this.adapter.runTick(input);
+
+      // Try WebSocket first, fall back to adapter
+      let output;
+      if (this.wsManager && this.wsManager.isConnected(openClawId)) {
+        output = await this._tickViaWs(openClawId, input);
+      } else {
+        output = await this.adapter.runTick(input);
+      }
+
       const result = await this.store.applyTickOutput(output, input.now, openClawId);
       const diagnosticEvents = [];
 
@@ -53,7 +62,7 @@ class LobsterScheduler extends EventEmitter {
           output.debugSummary,
           {
             actionType: output.actionType,
-            source: this.adapter.mode,
+            source: this.wsManager?.isConnected(openClawId) ? "websocket" : this.adapter.mode,
           },
           input.now,
           openClawId
@@ -72,7 +81,7 @@ class LobsterScheduler extends EventEmitter {
 
       this.emit("relationship_changed", {
         lobsterId: input.lobsterId,
-        openClawId: input.lobsterId,
+        openClawId: selectedOpenClawId,
         relationships: result.relationshipChanges,
       });
 
@@ -98,6 +107,29 @@ class LobsterScheduler extends EventEmitter {
     } finally {
       this.inFlight = false;
     }
+  }
+
+  async _tickViaWs(openClawId, input) {
+    const response = await this.wsManager.sendTickRequest(openClawId, input);
+
+    const actionType = typeof response.actionType === "string" && response.actionType.trim()
+      ? response.actionType.trim()
+      : "idle";
+
+    const emittedEvents = Array.isArray(response.emittedEvents) && response.emittedEvents.length
+      ? response.emittedEvents
+      : [{
+          type: actionType,
+          payload: { summary: "OpenClaw 通过 WebSocket 完成了一次行动。" },
+        }];
+
+    return {
+      actionType,
+      emittedEvents,
+      statePatch: response.statePatch || {},
+      debugSummary: response.debugSummary || null,
+      diagnosticEventType: response.diagnosticEventType || null,
+    };
   }
 }
 

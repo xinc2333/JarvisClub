@@ -887,9 +887,10 @@ async function listSchedulableOpenClawIds() {
     `SELECT DISTINCT lobster_id
      FROM lobster_runtime_states
      WHERE scheduler_mode = ?
+        OR scheduler_mode = ?
         OR (scheduler_mode = ? AND (last_agent_seen_at IS NULL OR last_agent_seen_at < ?))
      ORDER BY updated_at ASC, lobster_id ASC`,
-    ["platform_tick", "agent_self_driven", cutoff]
+    ["platform_tick", "ws_connected", "agent_self_driven", cutoff]
   );
   return rows.map((row) => row.lobster_id).filter(Boolean);
 }
@@ -1181,6 +1182,10 @@ function deriveAgentStatus(runtimeLike) {
   const lastSeenAt = runtimeLike?.lastAgentSeenAt || runtimeLike?.last_agent_seen_at || null;
   const schedulerMode = runtimeLike?.schedulerMode || runtimeLike?.scheduler_mode || "platform_tick";
 
+  if (schedulerMode === "ws_connected") {
+    return "connected";
+  }
+
   if (schedulerMode !== "agent_self_driven") {
     return "platform_driven";
   }
@@ -1239,6 +1244,92 @@ async function connectService(openClawId = DEFAULT_LOBSTER_ID) {
   };
 }
 
+async function createApiKey(options = {}) {
+  const createdAt = now();
+  const apiKey = `key_${randomBytes(16).toString("hex")}`;
+  const displayLabel = typeof options.displayLabel === "string" && options.displayLabel.trim()
+    ? options.displayLabel.trim().slice(0, 64)
+    : "默认";
+
+  await run(
+    `INSERT INTO agent_api_keys (id, user_id, key_hash, display_label, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [randomUUID(), OWNER_USER_ID, hashSecret(apiKey), displayLabel, "active", createdAt]
+  );
+
+  return { apiKey, displayLabel, status: "active", createdAt };
+}
+
+async function validateApiKey(apiKey) {
+  if (!apiKey || typeof apiKey !== "string") {
+    return null;
+  }
+
+  const row = await get(
+    "SELECT * FROM agent_api_keys WHERE key_hash = ? AND status = ?",
+    [hashSecret(apiKey), "active"]
+  );
+
+  return row || null;
+}
+
+async function revokeApiKey(keyId) {
+  const revokedAt = now();
+  const result = await run(
+    "UPDATE agent_api_keys SET status = ?, revoked_at = ? WHERE id = ? AND status = ?",
+    ["revoked", revokedAt, keyId, "active"]
+  );
+
+  if (!result.changes) {
+    return { ok: false, status: 404, error: "Key not found or already revoked." };
+  }
+
+  const row = await get("SELECT lobster_id FROM agent_api_keys WHERE id = ?", [keyId]);
+  if (row?.lobster_id) {
+    await run(
+      `UPDATE lobster_runtime_states SET scheduler_mode = ?, updated_at = ? WHERE lobster_id = ?`,
+      ["platform_tick", revokedAt, row.lobster_id]
+    );
+  }
+
+  return { ok: true, keyId, lobsterId: row?.lobster_id || null };
+}
+
+async function listApiKeys() {
+  const rows = await all(
+    "SELECT id, user_id, lobster_id, display_label, status, created_at, last_connected_at, revoked_at FROM agent_api_keys ORDER BY created_at DESC"
+  );
+  return rows;
+}
+
+async function bindApiKeyToOpenClaw(keyId, lobsterId) {
+  const connectedAt = now();
+  await run(
+    "UPDATE agent_api_keys SET lobster_id = ?, last_connected_at = ? WHERE id = ?",
+    [lobsterId, connectedAt, keyId]
+  );
+}
+
+async function markOpenClawWsConnected(openClawId) {
+  const connectedAt = now();
+  await run(
+    `UPDATE lobster_runtime_states
+     SET scheduler_mode = ?, last_agent_seen_at = ?, updated_at = ?
+     WHERE lobster_id = ?`,
+    ["ws_connected", connectedAt, connectedAt, openClawId]
+  );
+}
+
+async function markOpenClawWsDisconnected(openClawId) {
+  const disconnectedAt = now();
+  await run(
+    `UPDATE lobster_runtime_states
+     SET scheduler_mode = ?, updated_at = ?
+     WHERE lobster_id = ? AND scheduler_mode = ?`,
+    ["platform_tick", disconnectedAt, openClawId, "ws_connected"]
+  );
+}
+
 module.exports = {
   initializeStore,
   getProfile,
@@ -1259,4 +1350,13 @@ module.exports = {
   applyTickOutput,
   recordDiagnosticEvent,
   connectService,
+  createApiKey,
+  validateApiKey,
+  revokeApiKey,
+  listApiKeys,
+  bindApiKeyToOpenClaw,
+  markOpenClawWsConnected,
+  markOpenClawWsDisconnected,
+  resolveOrCreateOpenClawId,
+  ensureOpenClawExists,
 };
